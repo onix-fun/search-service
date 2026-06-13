@@ -1,0 +1,58 @@
+services:
+  redis:
+    image: redis:8.2.6-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:4-alpine
+    ports:
+      - "5672:5672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.45.1
+    environment:
+      MEILI_MASTER_KEY: local-development-key
+    ports:
+      - "7700:7700"
+    volumes:
+      - meili-data:/meili_data
+
+  search-service:
+    build: .
+    command: ["serve", "--role=all", "--config=config/config.example.yaml"]
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      meilisearch:
+        condition: service_started
+
+  migrate-index:
+    build: .
+    command: ["migrate-index", "--config=config/config.example.yaml"]
+    profiles: ["tools"]
+    depends_on:
+      meilisearch:
+        condition: service_started
+
+volumes:
+  redis-data:
+  meili-data:

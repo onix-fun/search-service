@@ -1,0 +1,49 @@
+service:
+  name: search-service
+  grpc_addr: ":9090"
+  http_addr: ":8080"
+  internal_auth_secret: "development-only-internal-secret"
+
+redis:
+  addr: "redis:6379"
+  lease_key: "search:index:leader"
+  lease_duration: "15s"
+  lease_renew: "5s"
+
+rabbitmq:
+  url: "amqp://guest:guest@rabbitmq:5672/"
+  dlq_exchange: "search.index.dlq"
+  dlq_queue: "search.index.dlq.queue"
+  prefetch_count: 100
+
+meilisearch:
+  host: "http://meilisearch:7700"
+  api_key: "local-development-key"
+  index: "global_search"
+  task_poll_interval: "100ms"
+  task_timeout: "30s"
+
+search:
+  default_limit: 20
+  max_limit: 100
+
+enrichment:
+  transliteration: true
+  morphology: true
+  synonyms_file: "config/synonyms.yaml"
+
+indexer:
+  shards: 8
+  queue_size: 1000
+  flush_interval: "500ms"
+  max_retries: 5
+
+entities:
+  - name: subjects
+    exchange: "search.subjects.events"
+    queue: "search.subjects.events.queue"
+    revision_prefix: "search:revision:subjects:"
+  - name: blocks
+    exchange: "search.blocks.events"
+    queue: "search.blocks.events.queue"
+    revision_prefix: "search:revision:blocks:"
