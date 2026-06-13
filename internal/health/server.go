@@ -9,8 +9,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/company/search-service/internal/backend"
-	"github.com/company/search-service/internal/broker/rabbitmq"
+	"github.com/onix-fun/search-service/internal/backend"
+	"github.com/onix-fun/search-service/internal/broker/rabbitmq"
 )
 
 type Probe struct {
@@ -62,4 +62,13 @@ func Handler(logger *slog.Logger, probe *Probe) http.Handler {
 		_, _ = writer.Write([]byte("ok\n"))
 	})
 	return mux
+}
+
+func Mount(mux *http.ServeMux, logger *slog.Logger, probe *Probe) {
+	mux.Handle("/livez", Handler(logger, probe))
+	mux.Handle("/readyz", Handler(logger, probe))
+	mux.HandleFunc("/metrics", func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		_, _ = writer.Write([]byte("# HELP search_service_up Whether the search service is running.\n# TYPE search_service_up gauge\nsearch_service_up 1\n"))
+	})
 }

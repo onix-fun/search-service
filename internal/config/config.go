@@ -12,14 +12,15 @@ import (
 )
 
 type Config struct {
-	Service     ServiceConfig     `yaml:"service"`
-	Redis       RedisConfig       `yaml:"redis"`
-	RabbitMQ    RabbitMQConfig    `yaml:"rabbitmq"`
-	Meilisearch MeilisearchConfig `yaml:"meilisearch"`
-	Search      SearchConfig      `yaml:"search"`
-	Enrichment  EnrichmentConfig  `yaml:"enrichment"`
-	Indexer     IndexerConfig     `yaml:"indexer"`
-	Entities    []EntityConfig    `yaml:"entities"`
+	Service     ServiceConfig      `yaml:"service"`
+	Redis       RedisConfig        `yaml:"redis"`
+	RabbitMQ    RabbitMQConfig     `yaml:"rabbitmq"`
+	Meilisearch MeilisearchConfig  `yaml:"meilisearch"`
+	Search      SearchConfig       `yaml:"search"`
+	Enrichment  EnrichmentConfig   `yaml:"enrichment"`
+	Indexer     IndexerConfig      `yaml:"indexer"`
+	Collections []CollectionConfig `yaml:"collections"`
+	APIKeys     []APIKey           `yaml:"api_keys"`
 }
 
 type ServiceConfig struct {
@@ -71,11 +72,24 @@ type IndexerConfig struct {
 	MaxRetries    int64         `yaml:"max_retries"`
 }
 
-type EntityConfig struct {
-	Name           string `yaml:"name"`
-	Exchange       string `yaml:"exchange"`
-	Queue          string `yaml:"queue"`
-	RevisionPrefix string `yaml:"revision_prefix"`
+type CollectionConfig struct {
+	Name           string   `yaml:"name"`
+	Index          string   `yaml:"index"`
+	Exchange       string   `yaml:"exchange"`
+	Queue          string   `yaml:"queue"`
+	RoutingKey     string   `yaml:"routing_key"`
+	RevisionPrefix string   `yaml:"revision_prefix"`
+	Searchable     []string `yaml:"searchable_fields"`
+	Filterable     []string `yaml:"filterable_fields"`
+	Sortable       []string `yaml:"sortable_fields"`
+	Returnable     []string `yaml:"returnable_fields"`
+}
+
+type APIKey struct {
+	Name        string   `yaml:"name"`
+	Value       string   `yaml:"value"`
+	Scopes      []string `yaml:"scopes"`
+	Collections []string `yaml:"collections"`
 }
 
 func Defaults() Config {
@@ -102,19 +116,19 @@ func Defaults() Config {
 		Search:     SearchConfig{DefaultLimit: 20, MaxLimit: 100},
 		Enrichment: EnrichmentConfig{Transliteration: true, Morphology: true, SynonymsFile: "config/synonyms.yaml"},
 		Indexer:    IndexerConfig{Shards: 8, QueueSize: 1000, FlushInterval: 500 * time.Millisecond, MaxRetries: 5},
-		Entities: []EntityConfig{
-			{Name: "default", Exchange: "search.index.events", Queue: "search.index.events.queue", RevisionPrefix: "search:revision:"},
+		Collections: []CollectionConfig{
+			{Name: "default", Index: "default", Exchange: "search.index.events", Queue: "search.index.events.queue", RoutingKey: "search.index.events.queue", RevisionPrefix: "search:revision:", Searchable: []string{"*"}, Returnable: []string{"*"}},
 		},
 	}
 }
 
-func (c Config) Entity(name string) (EntityConfig, bool) {
-	for _, e := range c.Entities {
+func (c Config) Collection(name string) (CollectionConfig, bool) {
+	for _, e := range c.Collections {
 		if e.Name == name {
 			return e, true
 		}
 	}
-	return EntityConfig{}, false
+	return CollectionConfig{}, false
 }
 
 func Load(path string) (Config, error) {
@@ -124,12 +138,34 @@ func Load(path string) (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("read config: %w", err)
 		}
-		if err := yaml.Unmarshal(data, &cfg); err != nil {
+		if err := yaml.Unmarshal([]byte(os.ExpandEnv(string(data))), &cfg); err != nil {
 			return Config{}, fmt.Errorf("decode config: %w", err)
 		}
 	}
 	if err := applyEnv(&cfg); err != nil {
 		return Config{}, err
+	}
+	for _, target := range []*string{&cfg.Service.InternalAuthSecret, &cfg.Redis.Password, &cfg.RabbitMQ.URL, &cfg.Meilisearch.APIKey} {
+		if strings.HasPrefix(*target, "file:") {
+			data, err := os.ReadFile(strings.TrimPrefix(*target, "file:"))
+			if err != nil {
+				return Config{}, fmt.Errorf("read secret: %w", err)
+			}
+			*target = strings.TrimSpace(string(data))
+		}
+	}
+	for i := range cfg.APIKeys {
+		if cfg.APIKeys[i].Value == "" {
+			continue
+		}
+		target := &cfg.APIKeys[i].Value
+		if strings.HasPrefix(*target, "file:") {
+			data, err := os.ReadFile(strings.TrimPrefix(*target, "file:"))
+			if err != nil {
+				return Config{}, fmt.Errorf("read API key: %w", err)
+			}
+			*target = strings.TrimSpace(string(data))
+		}
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -138,8 +174,8 @@ func Load(path string) (Config, error) {
 }
 
 func (c Config) Validate() error {
-	if c.Service.GRPCAddr == "" || c.Service.HTTPAddr == "" {
-		return errors.New("service grpc_addr and http_addr are required")
+	if c.Service.HTTPAddr == "" {
+		return errors.New("service http_addr is required")
 	}
 	if c.Service.InternalAuthSecret == "" {
 		return errors.New("service internal_auth_secret is required")
@@ -153,8 +189,8 @@ func (c Config) Validate() error {
 	if c.RabbitMQ.URL == "" {
 		return errors.New("rabbitmq url is required")
 	}
-	if c.Meilisearch.Host == "" || c.Meilisearch.Index == "" {
-		return errors.New("meilisearch host and index are required")
+	if c.Meilisearch.Host == "" {
+		return errors.New("meilisearch host is required")
 	}
 	if c.Search.DefaultLimit <= 0 || c.Search.MaxLimit < c.Search.DefaultLimit {
 		return errors.New("search limits are invalid")
@@ -162,16 +198,24 @@ func (c Config) Validate() error {
 	if c.Indexer.Shards <= 0 || c.Indexer.QueueSize <= 0 || c.Indexer.FlushInterval <= 0 || c.Indexer.MaxRetries <= 0 {
 		return errors.New("indexer values must be greater than zero")
 	}
-	if len(c.Entities) == 0 {
-		return errors.New("at least one entity is required")
+	if len(c.Collections) == 0 {
+		return errors.New("at least one collection is required")
 	}
-	for i, entity := range c.Entities {
-		if entity.Name == "" {
-			return fmt.Errorf("entities[%d].name is required", i)
+	if len(c.APIKeys) == 0 && c.Service.InternalAuthSecret == "" {
+		return errors.New("at least one api key or service.internal_auth_secret is required")
+	}
+	seen := map[string]struct{}{}
+	for i, collection := range c.Collections {
+		if collection.Name == "" || collection.Index == "" {
+			return fmt.Errorf("collections[%d].name and index are required", i)
 		}
-		if entity.Exchange == "" || entity.Queue == "" {
-			return fmt.Errorf("entities[%d].exchange and queue are required", i)
+		if collection.Exchange == "" || collection.Queue == "" || collection.RoutingKey == "" {
+			return fmt.Errorf("collections[%d].exchange, queue and routing_key are required", i)
 		}
+		if _, ok := seen[collection.Name]; ok {
+			return fmt.Errorf("duplicate collection %q", collection.Name)
+		}
+		seen[collection.Name] = struct{}{}
 	}
 	return nil
 }

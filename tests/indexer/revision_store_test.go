@@ -7,8 +7,8 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/company/search-service/internal/indexer"
-	"github.com/company/search-service/internal/model"
+	"github.com/onix-fun/search-service/internal/indexer"
+	"github.com/onix-fun/search-service/internal/model"
 )
 
 func TestRevisionStoreLatestWinsAndDetectsConflict(t *testing.T) {
@@ -35,12 +35,11 @@ func TestRevisionStoreLatestWinsAndDetectsConflict(t *testing.T) {
 
 func testEvent(revision int64, operation model.Operation) model.IndexEvent {
 	event := model.IndexEvent{
-		EventID: "01HY", EntityType: "users", Operation: operation,
-		UUID: "9dd2e47e-7a2d-4b99-b7a1-ff0d94b7e301", Revision: revision,
+		EventID: "01HY", Collection: "users", Operation: operation,
+		DocumentID: "user-1", Revision: revision,
 	}
 	if operation == model.OperationUpsert {
-		event.Source = "users"
-		event.Title = "Ivan"
+		event.Document = map[string]any{"name": "Ivan"}
 	}
 	return event
 }

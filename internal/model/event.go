@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 type Operation string
@@ -19,19 +17,15 @@ const (
 	OperationDelete Operation = "delete"
 )
 
+// IndexEvent is the stable RabbitMQ contract consumed by search-service v1.
 type IndexEvent struct {
-	EventID     string            `json:"event_id"`
-	Operation   Operation         `json:"operation"`
-	EntityType  string            `json:"entity_type"`
-	UUID        string            `json:"uuid"`
-	Revision    int64             `json:"revision"`
-	Source      string            `json:"source,omitempty"`
-	Title       string            `json:"title,omitempty"`
-	Description string            `json:"description,omitempty"`
-	Text        string            `json:"text,omitempty"`
-	Keywords    []string          `json:"keywords,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
-	UpdatedAt   string            `json:"updated_at,omitempty"`
+	EventID    string         `json:"event_id"`
+	Operation  Operation      `json:"operation"`
+	Collection string         `json:"collection"`
+	DocumentID string         `json:"document_id"`
+	Revision   int64          `json:"revision"`
+	Document   map[string]any `json:"document,omitempty"`
+	OccurredAt string         `json:"occurred_at,omitempty"`
 }
 
 func ParseEvent(payload string) (IndexEvent, error) {
@@ -49,35 +43,41 @@ func (e IndexEvent) Validate() error {
 	if strings.TrimSpace(e.EventID) == "" {
 		return errors.New("event_id is required")
 	}
-	if strings.TrimSpace(e.EntityType) == "" {
-		return errors.New("entity_type is required")
+	if strings.TrimSpace(e.Collection) == "" {
+		return errors.New("collection is required")
 	}
-	if _, err := uuid.Parse(e.UUID); err != nil {
-		return errors.New("uuid must be a valid UUID")
+	if strings.TrimSpace(e.DocumentID) == "" {
+		return errors.New("document_id is required")
 	}
 	if e.Revision <= 0 {
 		return errors.New("revision must be greater than zero")
 	}
-	if e.UpdatedAt != "" {
-		if _, err := time.Parse(time.RFC3339, e.UpdatedAt); err != nil {
-			return errors.New("updated_at must use RFC3339")
+	if e.OccurredAt != "" {
+		if _, err := time.Parse(time.RFC3339, e.OccurredAt); err != nil {
+			return errors.New("occurred_at must use RFC3339")
 		}
 	}
-
 	switch e.Operation {
 	case OperationDelete:
 		return nil
 	case OperationUpsert:
-		if strings.TrimSpace(e.Title) == "" &&
-			strings.TrimSpace(e.Description) == "" &&
-			strings.TrimSpace(e.Text) == "" &&
-			len(e.Keywords) == 0 {
-			return errors.New("at least one searchable field is required for upsert")
+		if len(e.Document) == 0 {
+			return errors.New("document is required for upsert")
 		}
 		return nil
 	default:
 		return fmt.Errorf("unknown operation %q", e.Operation)
 	}
+}
+
+func (e IndexEvent) SearchDocument() Document {
+	doc := Document{"id": e.DocumentID, "_revision": e.Revision}
+	for key, value := range e.Document {
+		if key != "id" && key != "_revision" {
+			doc[key] = value
+		}
+	}
+	return doc
 }
 
 func (e IndexEvent) CanonicalPayload() (string, error) {

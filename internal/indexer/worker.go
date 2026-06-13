@@ -13,11 +13,11 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/company/search-service/internal/backend"
-	"github.com/company/search-service/internal/broker/rabbitmq"
-	"github.com/company/search-service/internal/config"
-	"github.com/company/search-service/internal/enrichment"
-	"github.com/company/search-service/internal/model"
+	"github.com/onix-fun/search-service/internal/backend"
+	"github.com/onix-fun/search-service/internal/broker/rabbitmq"
+	"github.com/onix-fun/search-service/internal/config"
+	"github.com/onix-fun/search-service/internal/enrichment"
+	"github.com/onix-fun/search-service/internal/model"
 )
 
 type Broker interface {
@@ -48,8 +48,8 @@ type QueuedMessage struct {
 }
 
 func NewWorker(cfg config.Config, logger *slog.Logger, searchBackend backend.SearchBackend, enricher *enrichment.Processor, broker Broker, redisClient *redis.Client) *Worker {
-	stores := make(map[string]*RevisionStore, len(cfg.Entities))
-	for _, entity := range cfg.Entities {
+	stores := make(map[string]*RevisionStore, len(cfg.Collections))
+	for _, entity := range cfg.Collections {
 		stores[entity.Name] = NewRevisionStore(redisClient, entity.RevisionPrefix)
 	}
 	return &Worker{
@@ -171,13 +171,13 @@ func (w *Worker) consume(ctx context.Context) error {
 			event, err := model.ParseEvent(string(ed.Delivery.Body))
 			if err != nil {
 				w.logger.Warn("invalid event payload, sending to DLQ", "error", err, "entity", ed.Entity)
-				if dlqErr := w.deadLetterRaw(ctx, model.IndexEvent{EntityType: ed.Entity}, ed.Delivery, 0, err.Error()); dlqErr != nil {
+				if dlqErr := w.deadLetterRaw(ctx, model.IndexEvent{Collection: ed.Entity}, ed.Delivery, 0, err.Error()); dlqErr != nil {
 					return dlqErr
 				}
 				continue
 			}
-			if event.EntityType == "" {
-				event.EntityType = ed.Entity
+			if event.Collection == "" {
+				event.Collection = ed.Entity
 			}
 
 			var retries int64
@@ -192,7 +192,7 @@ func (w *Worker) consume(ctx context.Context) error {
 				}
 			}
 
-			index := shardIndex(event.UUID, len(shards))
+			index := shardIndex(event.DocumentID, len(shards))
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -234,6 +234,7 @@ func (w *Worker) ProcessBatch(ctx context.Context, messages []QueuedMessage) {
 	var chunk []QueuedMessage
 	seen := make(map[string]struct{})
 	var operation model.Operation
+	var collection string
 	flush := func() {
 		if len(chunk) > 0 {
 			w.applyChunk(ctx, chunk)
@@ -241,10 +242,11 @@ func (w *Worker) ProcessBatch(ctx context.Context, messages []QueuedMessage) {
 		chunk = nil
 		clear(seen)
 		operation = ""
+		collection = ""
 	}
 
 	for _, message := range messages {
-		if _, exists := seen[message.Event.UUID]; exists || (operation != "" && operation != message.Event.Operation) {
+		if _, exists := seen[message.Event.DocumentID]; exists || (operation != "" && operation != message.Event.Operation) || (collection != "" && collection != message.Event.Collection) {
 			flush()
 		}
 		store := w.Store(message.Entity)
@@ -266,7 +268,8 @@ func (w *Worker) ProcessBatch(ctx context.Context, messages []QueuedMessage) {
 			continue
 		}
 		operation = message.Event.Operation
-		seen[message.Event.UUID] = struct{}{}
+		collection = message.Event.Collection
+		seen[message.Event.DocumentID] = struct{}{}
 		chunk = append(chunk, message)
 	}
 	flush()
@@ -283,13 +286,23 @@ func (w *Worker) applyChunk(ctx context.Context, messages []QueuedMessage) {
 		for _, message := range messages {
 			docs = append(docs, w.enricher.Enrich(message.Event))
 		}
-		err = w.Backend.Upsert(ctx, docs)
+		cfg, ok := w.Cfg.Collection(messages[0].Event.Collection)
+		if !ok {
+			err = fmt.Errorf("unknown collection %s", messages[0].Event.Collection)
+			break
+		}
+		err = w.Backend.Upsert(ctx, cfg.Index, docs)
 	case model.OperationDelete:
 		ids := make([]string, 0, len(messages))
 		for _, message := range messages {
-			ids = append(ids, message.Event.UUID)
+			ids = append(ids, message.Event.DocumentID)
 		}
-		err = w.Backend.Delete(ctx, ids)
+		cfg, ok := w.Cfg.Collection(messages[0].Event.Collection)
+		if !ok {
+			err = fmt.Errorf("unknown collection %s", messages[0].Event.Collection)
+			break
+		}
+		err = w.Backend.Delete(ctx, cfg.Index, ids)
 	}
 	if err != nil {
 		for _, message := range messages {
@@ -316,7 +329,7 @@ func (w *Worker) applyChunk(ctx context.Context, messages []QueuedMessage) {
 			continue
 		}
 		if decision == RevisionStale {
-			if err := w.reconcile(ctx, store, message.Event.UUID); err != nil {
+			if err := w.reconcile(ctx, store, message.Event.DocumentID); err != nil {
 				w.retryOrDLQ(ctx, message, err)
 				continue
 			}
@@ -340,9 +353,17 @@ func (w *Worker) reconcile(ctx context.Context, store *RevisionStore, uuid strin
 		}
 		switch event.Operation {
 		case model.OperationUpsert:
-			err = w.Backend.Upsert(ctx, []model.Document{w.enricher.Enrich(event)})
+			cfg, ok := w.Cfg.Collection(event.Collection)
+			if !ok {
+				return fmt.Errorf("unknown collection %s", event.Collection)
+			}
+			err = w.Backend.Upsert(ctx, cfg.Index, []model.Document{w.enricher.Enrich(event)})
 		case model.OperationDelete:
-			err = w.Backend.Delete(ctx, []string{event.UUID})
+			cfg, ok := w.Cfg.Collection(event.Collection)
+			if !ok {
+				return fmt.Errorf("unknown collection %s", event.Collection)
+			}
+			err = w.Backend.Delete(ctx, cfg.Index, []string{event.DocumentID})
 		}
 		if err != nil {
 			return fmt.Errorf("reconcile %s: %w", uuid, err)

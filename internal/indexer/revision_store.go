@@ -7,7 +7,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/company/search-service/internal/model"
+	"github.com/onix-fun/search-service/internal/model"
 )
 
 var saveRevisionScript = redis.NewScript(`
@@ -52,7 +52,7 @@ func NewRevisionStore(client *redis.Client, prefix string) *RevisionStore {
 }
 
 func (s *RevisionStore) Check(ctx context.Context, event model.IndexEvent) (RevisionDecision, error) {
-	state, ok, err := s.Get(ctx, event.UUID)
+	state, ok, err := s.Get(ctx, event.DocumentID)
 	if err != nil || !ok {
 		return RevisionNew, err
 	}
@@ -81,7 +81,7 @@ func (s *RevisionStore) Save(ctx context.Context, event model.IndexEvent) (Revis
 	if err != nil {
 		return RevisionNew, err
 	}
-	result, err := saveRevisionScript.Run(ctx, s.client, []string{s.key(event.UUID)}, event.Revision, digest, payload).Int()
+	result, err := saveRevisionScript.Run(ctx, s.client, []string{s.key(event.DocumentID)}, event.Revision, digest, payload).Int()
 	if err != nil {
 		return RevisionNew, fmt.Errorf("save revision: %w", err)
 	}

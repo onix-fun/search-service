@@ -3,13 +3,11 @@ package model_test
 import (
 	"testing"
 
-	"github.com/company/search-service/internal/model"
+	"github.com/onix-fun/search-service/internal/model"
 )
 
-const validUUID = "9dd2e47e-7a2d-4b99-b7a1-ff0d94b7e301"
-
 func TestParseEvent(t *testing.T) {
-	event, err := model.ParseEvent(`{"event_id":"01HY","entity_type":"users","operation":"upsert","uuid":"` + validUUID + `","revision":42,"source":"users","title":"Ivan"}`)
+	event, err := model.ParseEvent(`{"event_id":"01HY","collection":"users","operation":"upsert","document_id":"opaque-1","revision":42,"document":{"name":"Ivan"}}`)
 	if err != nil {
 		t.Fatalf("ParseEvent() error = %v", err)
 	}
@@ -18,22 +16,22 @@ func TestParseEvent(t *testing.T) {
 	}
 }
 
-func TestValidateRequiresEntityType(t *testing.T) {
-	event := model.IndexEvent{EventID: "01HY", Operation: model.OperationUpsert, UUID: validUUID, Revision: 1}
+func TestValidateRequiresCollection(t *testing.T) {
+	event := model.IndexEvent{EventID: "01HY", Operation: model.OperationUpsert, DocumentID: "id", Revision: 1, Document: map[string]any{"name": "Ivan"}}
 	if err := event.Validate(); err == nil {
-		t.Fatal("Validate() error = nil, want entity_type validation error")
+		t.Fatal("Validate() error = nil, want collection validation error")
 	}
 }
 
 func TestValidateDeleteRequiresRevision(t *testing.T) {
-	event := model.IndexEvent{EventID: "01HY", EntityType: "users", Operation: model.OperationDelete, UUID: validUUID}
+	event := model.IndexEvent{EventID: "01HY", Collection: "users", Operation: model.OperationDelete, DocumentID: "opaque"}
 	if err := event.Validate(); err == nil {
 		t.Fatal("Validate() error = nil, want revision validation error")
 	}
 }
 
 func TestDigestIsStableForEquivalentEvent(t *testing.T) {
-	event := model.IndexEvent{EventID: "01HY", EntityType: "users", Operation: model.OperationUpsert, UUID: validUUID, Revision: 1, Source: "users", Title: "Ivan"}
+	event := model.IndexEvent{EventID: "01HY", Collection: "users", Operation: model.OperationUpsert, DocumentID: "opaque", Revision: 1, Document: map[string]any{"name": "Ivan"}}
 	first, err := event.Digest()
 	if err != nil {
 		t.Fatal(err)

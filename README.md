@@ -1,108 +1,42 @@
 # Search Service
 
-Go-сервис полнотекстового поиска UUID. События полного состояния документа приходят через Redis Streams, индексируются в Meilisearch, а клиенты выполняют поиск через gRPC.
+Самостоятельный сервис полнотекстового поиска поверх Meilisearch. Документы поступают через RabbitMQ, revision/idempotency state хранится в Redis, поиск доступен через HTTP API.
 
-## Возможности
-
-- `upsert` и `delete` с latest-wins семантикой по монотонной `revision`;
-- active-passive индексатор с Redis lease и восстановлением pending-сообщений через `XAUTOCLAIM`;
-- подтверждение Redis-события только после успешного завершения Meilisearch task;
-- DLQ после исчерпания retry либо сразу для невалидных событий;
-- ru/en транслитерация, Snowball stemming, синонимы, typo tolerance и prefix search Meilisearch;
-- отдельные runtime-роли `api`, `indexer`, `all`;
-- HTTP `/livez`, `/readyz` и стандартный gRPC health service.
-
-## Локальный запуск
-
-Запустить зависимости:
-
-```bash
-docker compose up -d redis meilisearch
-```
-
-Применить настройки индекса и синонимы:
-
-```bash
-docker compose --profile tools run --rm migrate-index
-```
-
-Запустить сервис:
-
-```bash
-docker compose up --build -d search-service
-curl http://localhost:8080/readyz
-```
-
-Redis запускается с AOF persistence. Состояние `revision` и tombstone после удаления также хранятся в Redis. При потере Redis state требуется полная переиндексация.
-
-## Публикация событий
-
-Stream: `search.index.events`. Запись содержит JSON в поле `payload`.
-
-```bash
-redis-cli XADD search.index.events '*' payload \
-  '{"event_id":"01HY0000000000000000000000","operation":"upsert","uuid":"9dd2e47e-7a2d-4b99-b7a1-ff0d94b7e301","revision":1,"source":"users","title":"Иван Петров","description":"Backend разработчик","text":"Go Redis PostgreSQL Meilisearch","keywords":["golang","backend","поиск"],"updated_at":"2026-06-02T10:00:00Z"}'
-```
-
-Удаление:
-
-```bash
-redis-cli XADD search.index.events '*' payload \
-  '{"event_id":"01HY0000000000000000000001","operation":"delete","uuid":"9dd2e47e-7a2d-4b99-b7a1-ff0d94b7e301","revision":2,"updated_at":"2026-06-02T10:05:00Z"}'
-```
-
-`revision` должна строго возрастать для каждого UUID. Повтор той же версии с тем же payload считается дублем. Другой payload для уже примененной версии попадает в DLQ.
-
-## Поиск
-
-После установки `grpcurl`:
-
-```bash
-grpcurl -plaintext \
-  -import-path api/proto \
-  -proto search/v1/search.proto \
-  -d '{"query":"Ivan Petrov","limit":20}' \
-  localhost:9090 search.v1.SearchService/Search
-```
-
-Ответ содержит ранжированный список UUID:
+## Контракт индексирования
 
 ```json
-{"uuids":["9dd2e47e-7a2d-4b99-b7a1-ff0d94b7e301"]}
+{
+  "event_id": "evt-1",
+  "operation": "upsert",
+  "collection": "subjects",
+  "document_id": "opaque-id",
+  "revision": 1,
+  "document": {"name": "Example", "visibility": "PUBLIC"},
+  "occurred_at": "2026-06-13T12:00:00Z"
+}
 ```
 
-## DLQ
+`document_id` является opaque string. Для удаления передаются те же поля без `document`.
 
-Необрабатываемые события записываются в `search.index.events.dlq`. Запись содержит исходный `payload`, `source_stream`, `source_id`, `attempts`, `reason`, `failed_at`.
+## Запуск
 
 ```bash
-redis-cli XRANGE search.index.events.dlq - +
+docker compose up -d
+search-service config validate --config=config/config.example.yaml
+search-service migrate-index --config=config/config.example.yaml
+search-service serve --config=config/config.example.yaml --role=all
 ```
 
-## Конфигурация
+Поиск: `POST /v1/collections/{collection}/search`. Health endpoints: `/livez`, `/readyz`, `/metrics`.
 
-Пример находится в `config/config.example.yaml`. Любой runtime-параметр можно переопределить переменной окружения с префиксом `SEARCH_`, например:
+Конфигурация коллекций задает отдельный index, RabbitMQ topology, searchable/filterable/sortable/returnable fields. Секреты передаются через environment variables.
 
-```bash
-SEARCH_REDIS_ADDR=localhost:6379
-SEARCH_MEILISEARCH_HOST=http://localhost:7700
-SEARCH_MEILISEARCH_API_KEY=local-development-key
-```
+## Надежность
 
-Синонимы хранятся отдельно в `config/synonyms.yaml` и применяются только командой `migrate-index`, чтобы обычный запуск сервиса не инициировал переиндексацию.
+- at-least-once RabbitMQ consumer;
+- latest-wins по монотонной revision;
+- Redis lease для active-passive worker;
+- retry и DLQ;
+- подтверждение сообщения только после завершения Meilisearch task.
 
-## Разработка
-
-```bash
-make generate
-make test
-make race
-make build
-make docker-build
-```
-
-Если локальный Go недоступен, проверки можно выполнить контейнером:
-
-```bash
-docker run --rm -v "$PWD":/src -w /src golang:1.26.3-alpine go test ./...
-```
+Лицензия: MIT.

@@ -19,7 +19,6 @@ rabbitmq:
 meilisearch:
   host: "http://meilisearch:7700"
   api_key: "local-development-key"
-  index: "global_search"
   task_poll_interval: "100ms"
   task_timeout: "30s"
 
@@ -38,12 +37,27 @@ indexer:
   flush_interval: "500ms"
   max_retries: 5
 
-entities:
+collections:
   - name: subjects
+    index: subjects
     exchange: "search.subjects.events"
     queue: "search.subjects.events.queue"
+    routing_key: "search.subjects.events.queue"
     revision_prefix: "search:revision:subjects:"
+    searchable_fields: [name, content]
+    filterable_fields: [visibility, publication_status]
+    sortable_fields: [updated_at]
+    returnable_fields: [name, content, visibility, publication_status, updated_at]
   - name: blocks
+    index: blocks
     exchange: "search.blocks.events"
     queue: "search.blocks.events.queue"
+    routing_key: "search.blocks.events.queue"
     revision_prefix: "search:revision:blocks:"
+    searchable_fields: [content]
+    returnable_fields: [content, subject_id]
+api_keys:
+  - name: local
+    value: "${SEARCH_API_KEY}"
+    scopes: [search:read]
+    collections: ["*"]

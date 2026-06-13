@@ -8,15 +8,15 @@ import (
 	"sync"
 	"testing"
 
-	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/alicebob/miniredis/v2"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/company/search-service/internal/broker/rabbitmq"
-	"github.com/company/search-service/internal/config"
-	"github.com/company/search-service/internal/enrichment"
-	"github.com/company/search-service/internal/indexer"
-	"github.com/company/search-service/internal/model"
+	"github.com/onix-fun/search-service/internal/broker/rabbitmq"
+	"github.com/onix-fun/search-service/internal/config"
+	"github.com/onix-fun/search-service/internal/enrichment"
+	"github.com/onix-fun/search-service/internal/indexer"
+	"github.com/onix-fun/search-service/internal/model"
 )
 
 type workerBackend struct {
@@ -24,12 +24,13 @@ type workerBackend struct {
 	upserts   [][]model.Document
 }
 
-func (b *workerBackend) Health(context.Context) error           { return nil }
-func (b *workerBackend) Delete(context.Context, []string) error { return nil }
-func (b *workerBackend) Search(context.Context, []string, int, string) ([]string, error) {
-	return nil, nil
+func (b *workerBackend) Health(context.Context) error                   { return nil }
+func (b *workerBackend) Delete(context.Context, string, []string) error { return nil }
+func (b *workerBackend) Search(context.Context, string, model.SearchRequest) (model.SearchResult, error) {
+	return model.SearchResult{}, nil
 }
-func (b *workerBackend) Upsert(_ context.Context, docs []model.Document) error {
+func (b *workerBackend) Migrate(context.Context, []config.CollectionConfig) error { return nil }
+func (b *workerBackend) Upsert(_ context.Context, _ string, docs []model.Document) error {
 	b.upserts = append(b.upserts, docs)
 	return b.upsertErr
 }
@@ -78,7 +79,7 @@ func TestWorkerAcknowledgesAppliedEvent(t *testing.T) {
 	if broker.acked != 1 {
 		t.Fatalf("broker acked = %d, want 1", broker.acked)
 	}
-	state, ok, err := worker.Store("users").Get(context.Background(), message.Event.UUID)
+	state, ok, err := worker.Store("users").Get(context.Background(), message.Event.DocumentID)
 	if err != nil || !ok || state.Revision != 1 {
 		t.Fatalf("revision state = %#v, %v, %v", state, ok, err)
 	}
@@ -123,8 +124,8 @@ func newPendingEvent(t *testing.T, maxRetries int64) (*indexer.Worker, *mockBrok
 	cfg := config.Defaults()
 	cfg.Redis.Addr = server.Addr()
 	cfg.Indexer.MaxRetries = maxRetries
-	cfg.Entities = []config.EntityConfig{
-		{Name: "users", Exchange: "users.ex", Queue: "users.q", RevisionPrefix: "rev:users:"},
+	cfg.Collections = []config.CollectionConfig{
+		{Name: "users", Index: "users", Exchange: "users.ex", Queue: "users.q", RoutingKey: "users.q", RevisionPrefix: "rev:users:"},
 	}
 
 	backend := &workerBackend{}
@@ -142,12 +143,11 @@ func newPendingEvent(t *testing.T, maxRetries int64) (*indexer.Worker, *mockBrok
 
 func testWorkerEvent(revision int64, operation model.Operation) model.IndexEvent {
 	event := model.IndexEvent{
-		EventID: "01HY", EntityType: "users", Operation: operation,
-		UUID: "9dd2e47e-7a2d-4b99-b7a1-ff0d94b7e301", Revision: revision,
+		EventID: "01HY", Collection: "users", Operation: operation,
+		DocumentID: "user-1", Revision: revision,
 	}
 	if operation == model.OperationUpsert {
-		event.Source = "users"
-		event.Title = "Ivan"
+		event.Document = map[string]any{"name": "Ivan"}
 	}
 	return event
 }

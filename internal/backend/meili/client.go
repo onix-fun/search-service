@@ -15,14 +15,13 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/company/search-service/internal/config"
-	"github.com/company/search-service/internal/model"
+	"github.com/onix-fun/search-service/internal/config"
+	"github.com/onix-fun/search-service/internal/model"
 )
 
 type Client struct {
 	baseURL      string
 	apiKey       string
-	index        string
 	pollInterval time.Duration
 	taskTimeout  time.Duration
 	httpClient   *http.Client
@@ -41,18 +40,17 @@ type taskError struct {
 }
 
 type searchResponse struct {
-	Results []struct {
-		Hits []struct {
-			UUID string `json:"uuid"`
-		} `json:"hits"`
-	} `json:"results"`
+	Hits             []map[string]any `json:"hits"`
+	Offset           int              `json:"offset"`
+	Limit            int              `json:"limit"`
+	EstimatedTotal   int              `json:"estimatedTotalHits"`
+	ProcessingTimeMs int              `json:"processingTimeMs"`
 }
 
 func New(cfg config.MeilisearchConfig) *Client {
 	return &Client{
 		baseURL:      strings.TrimRight(cfg.Host, "/"),
 		apiKey:       cfg.APIKey,
-		index:        cfg.Index,
 		pollInterval: cfg.TaskPollInterval,
 		taskTimeout:  cfg.TaskTimeout,
 		httpClient:   &http.Client{Timeout: cfg.TaskTimeout},
@@ -63,82 +61,76 @@ func (c *Client) Health(ctx context.Context) error {
 	return c.do(ctx, http.MethodGet, "/health", nil, nil, http.StatusOK)
 }
 
-func (c *Client) Upsert(ctx context.Context, docs []model.Document) error {
+func (c *Client) Upsert(ctx context.Context, collection string, docs []model.Document) error {
 	if len(docs) == 0 {
 		return nil
 	}
-	task, err := c.enqueue(ctx, http.MethodPost, "/indexes/"+url.PathEscape(c.index)+"/documents", docs, http.StatusAccepted)
+	task, err := c.enqueue(ctx, http.MethodPost, "/indexes/"+url.PathEscape(collection)+"/documents", docs, http.StatusAccepted)
 	if err != nil {
 		return err
 	}
 	return c.waitTask(ctx, task)
 }
 
-func (c *Client) Delete(ctx context.Context, ids []string) error {
+func (c *Client) Delete(ctx context.Context, collection string, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	task, err := c.enqueue(ctx, http.MethodPost, "/indexes/"+url.PathEscape(c.index)+"/documents/delete-batch", ids, http.StatusAccepted)
+	task, err := c.enqueue(ctx, http.MethodPost, "/indexes/"+url.PathEscape(collection)+"/documents/delete-batch", ids, http.StatusAccepted)
 	if err != nil {
 		return err
 	}
 	return c.waitTask(ctx, task)
 }
 
-func (c *Client) Search(ctx context.Context, variants []string, limit int, entityType string) ([]string, error) {
-	if len(variants) == 0 {
-		return nil, nil
+func (c *Client) Search(ctx context.Context, collection string, request model.SearchRequest) (model.SearchResult, error) {
+	body := map[string]any{"q": request.Query, "limit": request.Limit, "offset": request.Offset, "showRankingScore": true}
+	if request.Filter != nil {
+		body["filter"] = request.Filter
 	}
-	queries := make([]map[string]any, 0, len(variants))
-	for _, variant := range variants {
-		q := map[string]any{
-			"indexUid":             c.index,
-			"q":                    variant,
-			"limit":                limit,
-			"attributesToRetrieve": []string{"uuid"},
-		}
-		if entityType != "" {
-			q["filter"] = "entity_type = " + entityType
-		}
-		queries = append(queries, q)
+	if len(request.Sort) > 0 {
+		body["sort"] = request.Sort
 	}
 	var response searchResponse
-	if err := c.do(ctx, http.MethodPost, "/multi-search", map[string]any{"queries": queries}, &response, http.StatusOK); err != nil {
-		return nil, err
+	if err := c.do(ctx, http.MethodPost, "/indexes/"+url.PathEscape(collection)+"/search", body, &response, http.StatusOK); err != nil {
+		return model.SearchResult{}, err
 	}
-
-	seen := make(map[string]struct{}, limit)
-	uuids := make([]string, 0, limit)
-	for _, result := range response.Results {
-		for _, hit := range result.Hits {
-			if hit.UUID == "" {
-				continue
-			}
-			if _, ok := seen[hit.UUID]; ok {
-				continue
-			}
-			seen[hit.UUID] = struct{}{}
-			uuids = append(uuids, hit.UUID)
-			if len(uuids) == limit {
-				return uuids, nil
-			}
+	result := model.SearchResult{Offset: response.Offset, Limit: response.Limit, EstimatedTotal: response.EstimatedTotal, ProcessingTimeMs: response.ProcessingTimeMs}
+	for _, raw := range response.Hits {
+		id, _ := raw["id"].(string)
+		score, _ := raw["_rankingScore"].(float64)
+		delete(raw, "_rankingScore")
+		if id != "" {
+			result.Hits = append(result.Hits, model.SearchHit{ID: id, Score: score, Data: raw})
 		}
 	}
-	return uuids, nil
+	return result, nil
 }
 
-func (c *Client) Migrate(ctx context.Context, synonymsFile string) error {
-	if err := c.ensureIndex(ctx); err != nil {
+func (c *Client) Migrate(ctx context.Context, collections []config.CollectionConfig) error {
+	for _, collection := range collections {
+		if err := c.migrateCollection(ctx, collection); err != nil {
+			return fmt.Errorf("migrate collection %s: %w", collection.Name, err)
+		}
+	}
+	return nil
+}
+
+func (c *Client) migrateCollection(ctx context.Context, collection config.CollectionConfig) error {
+	if err := c.ensureIndex(ctx, collection.Index); err != nil {
 		return err
 	}
+	// Synonyms are intentionally collection-neutral in v1; per-collection files can be added without changing the API.
+	synonymsFile := ""
 	synonyms, err := loadSynonyms(synonymsFile)
 	if err != nil {
 		return err
 	}
 	settings := map[string]any{
-		"searchableAttributes": []string{"title", "keywords", "stems", "translit", "description", "text"},
-		"filterableAttributes": []string{"entity_type"},
-		"displayedAttributes":  []string{"uuid"},
+		"searchableAttributes": collection.Searchable,
+		"filterableAttributes": collection.Filterable,
+		"sortableAttributes":   collection.Sortable,
+		"displayedAttributes":  append([]string{"id"}, collection.Returnable...),
 		"rankingRules":         []string{"words", "typo", "proximity", "attribute", "sort", "exactness"},
 		"typoTolerance": map[string]any{
 			"enabled":             true,
@@ -146,16 +138,16 @@ func (c *Client) Migrate(ctx context.Context, synonymsFile string) error {
 		},
 		"synonyms": synonyms,
 	}
-	task, err := c.enqueue(ctx, http.MethodPatch, "/indexes/"+url.PathEscape(c.index)+"/settings", settings, http.StatusAccepted)
+	task, err := c.enqueue(ctx, http.MethodPatch, "/indexes/"+url.PathEscape(collection.Index)+"/settings", settings, http.StatusAccepted)
 	if err != nil {
 		return err
 	}
 	return c.waitTask(ctx, task)
 }
 
-func (c *Client) ensureIndex(ctx context.Context) error {
+func (c *Client) ensureIndex(ctx context.Context, index string) error {
 	var existing map[string]any
-	err := c.do(ctx, http.MethodGet, "/indexes/"+url.PathEscape(c.index), nil, &existing, http.StatusOK)
+	err := c.do(ctx, http.MethodGet, "/indexes/"+url.PathEscape(index), nil, &existing, http.StatusOK)
 	if err == nil {
 		return nil
 	}
@@ -164,11 +156,11 @@ func (c *Client) ensureIndex(ctx context.Context) error {
 		return err
 	}
 
-	task, err := c.enqueue(ctx, http.MethodPost, "/indexes", map[string]string{"uid": c.index, "primaryKey": "id"}, http.StatusAccepted)
+	err = c.do(ctx, http.MethodPost, "/indexes", map[string]string{"uid": index, "primaryKey": "id"}, nil, http.StatusCreated)
 	if err == nil {
-		return c.waitTask(ctx, task)
+		return nil
 	}
-	if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusConflict {
+	if errors.As(err, &statusErr) && (statusErr.StatusCode == http.StatusConflict || statusErr.StatusCode == http.StatusAccepted) {
 		return nil
 	}
 	return err

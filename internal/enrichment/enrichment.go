@@ -8,7 +8,7 @@ import (
 	"github.com/kljensen/snowball"
 	"golang.org/x/text/unicode/norm"
 
-	"github.com/company/search-service/internal/model"
+	"github.com/onix-fun/search-service/internal/model"
 )
 
 var wordPattern = regexp.MustCompile(`[\p{L}\p{N}]+`)
@@ -23,32 +23,33 @@ func New(transliteration, morphology bool) *Processor {
 }
 
 func (p *Processor) Enrich(event model.IndexEvent) model.Document {
-	title := Normalize(event.Title)
-	description := Normalize(event.Description)
-	text := Normalize(event.Text)
-	keywords := normalizeList(event.Keywords)
-	allText := strings.Join(append([]string{title, description, text}, keywords...), " ")
-
-	doc := model.Document{
-		ID:          event.UUID,
-		UUID:        event.UUID,
-		EntityType:  event.EntityType,
-		Revision:    event.Revision,
-		Source:      event.Source,
-		Title:       title,
-		Description: description,
-		Text:        text,
-		Keywords:    keywords,
-		Metadata:    event.Metadata,
-		UpdatedAt:   event.UpdatedAt,
-	}
+	doc := event.SearchDocument()
+	var values []string
+	collectStrings(event.Document, &values)
+	allText := strings.Join(values, " ")
+	doc["_search_text"] = Normalize(allText)
 	if p.morphology {
-		doc.Stems = stems(allText)
+		doc["_stems"] = stems(allText)
 	}
 	if p.transliteration {
-		doc.Translit = Transliterate(allText)
+		doc["_translit"] = Transliterate(allText)
 	}
 	return doc
+}
+
+func collectStrings(value any, result *[]string) {
+	switch typed := value.(type) {
+	case string:
+		*result = append(*result, typed)
+	case []any:
+		for _, item := range typed {
+			collectStrings(item, result)
+		}
+	case map[string]any:
+		for _, item := range typed {
+			collectStrings(item, result)
+		}
+	}
 }
 
 func (p *Processor) QueryVariants(query string) []string {

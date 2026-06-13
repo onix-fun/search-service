@@ -3,8 +3,8 @@ PATH := /usr/local/go/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sb
 .PHONY: generate test race build docker-build compose-up migrate
 
 generate:
-	protoc --go_out=. --go_opt=module=github.com/company/search-service \
-		--go-grpc_out=. --go-grpc_opt=module=github.com/company/search-service \
+	protoc --go_out=. --go_opt=module=github.com/onix-fun/search-service \
+		--go-grpc_out=. --go-grpc_opt=module=github.com/onix-fun/search-service \
 		api/proto/search/v1/search.proto
 
 test:

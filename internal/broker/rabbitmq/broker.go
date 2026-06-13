@@ -9,8 +9,8 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"github.com/company/search-service/internal/config"
-	"github.com/company/search-service/internal/model"
+	"github.com/onix-fun/search-service/internal/config"
+	"github.com/onix-fun/search-service/internal/model"
 )
 
 type EntityDelivery struct {
@@ -19,16 +19,16 @@ type EntityDelivery struct {
 }
 
 type Broker struct {
-	conn     *amqp.Connection
-	ch       *amqp.Channel
-	cfg      config.RabbitMQConfig
-	entities []config.EntityConfig
-	logger   *slog.Logger
-	mu       sync.Mutex
+	conn        *amqp.Connection
+	ch          *amqp.Channel
+	cfg         config.RabbitMQConfig
+	collections []config.CollectionConfig
+	logger      *slog.Logger
+	mu          sync.Mutex
 }
 
-func New(cfg config.RabbitMQConfig, entities []config.EntityConfig, logger *slog.Logger) (*Broker, error) {
-	broker := &Broker{cfg: cfg, entities: entities, logger: logger}
+func New(cfg config.RabbitMQConfig, collections []config.CollectionConfig, logger *slog.Logger) (*Broker, error) {
+	broker := &Broker{cfg: cfg, collections: collections, logger: logger}
 	if err := broker.connect(); err != nil {
 		return nil, err
 	}
@@ -60,6 +60,20 @@ func (b *Broker) connect() error {
 	return nil
 }
 
+func (b *Broker) reconnect() error {
+	if b.conn != nil && !b.conn.IsClosed() {
+		return nil
+	}
+	b.logger.Info("reconnecting to rabbitmq")
+	if b.ch != nil {
+		b.ch.Close()
+	}
+	if b.conn != nil {
+		b.conn.Close()
+	}
+	return b.connect()
+}
+
 func (b *Broker) declareTopology(ch *amqp.Channel) error {
 	if err := ch.ExchangeDeclare(b.cfg.DLQExchange, "direct", true, false, false, false, nil); err != nil {
 		return fmt.Errorf("declare DLQ exchange: %w", err)
@@ -71,16 +85,16 @@ func (b *Broker) declareTopology(ch *amqp.Channel) error {
 		return fmt.Errorf("bind DLQ queue: %w", err)
 	}
 
-	for _, entity := range b.entities {
-		if err := ch.ExchangeDeclare(entity.Exchange, "direct", true, false, false, false, nil); err != nil {
-			return fmt.Errorf("declare exchange %s: %w", entity.Exchange, err)
+	for _, collection := range b.collections {
+		if err := ch.ExchangeDeclare(collection.Exchange, "direct", true, false, false, false, nil); err != nil {
+			return fmt.Errorf("declare exchange %s: %w", collection.Exchange, err)
 		}
 		dlqArgs := amqp.Table{"x-dead-letter-exchange": b.cfg.DLQExchange}
-		if _, err := ch.QueueDeclare(entity.Queue, true, false, false, false, dlqArgs); err != nil {
-			return fmt.Errorf("declare queue %s: %w", entity.Queue, err)
+		if _, err := ch.QueueDeclare(collection.Queue, true, false, false, false, dlqArgs); err != nil {
+			return fmt.Errorf("declare queue %s: %w", collection.Queue, err)
 		}
-		if err := ch.QueueBind(entity.Queue, entity.Queue, entity.Exchange, false, nil); err != nil {
-			return fmt.Errorf("bind queue %s: %w", entity.Queue, err)
+		if err := ch.QueueBind(collection.Queue, collection.RoutingKey, collection.Exchange, false, nil); err != nil {
+			return fmt.Errorf("bind queue %s: %w", collection.Queue, err)
 		}
 	}
 	return nil
@@ -89,33 +103,42 @@ func (b *Broker) declareTopology(ch *amqp.Channel) error {
 func (b *Broker) Publish(ctx context.Context, entity string, event model.IndexEvent) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	ec, ok := b.entityConfig(entity)
+	if err := b.reconnect(); err != nil {
+		return err
+	}
+	ec, ok := b.collectionConfig(entity)
 	if !ok {
 		return fmt.Errorf("unknown entity %s", entity)
 	}
-	return b.publish(ctx, ec.Exchange, ec.Queue, event, nil)
+	return b.publish(ctx, ec.Exchange, ec.RoutingKey, event, nil)
 }
 
 func (b *Broker) Republish(ctx context.Context, entity string, event model.IndexEvent, retries int64) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	ec, ok := b.entityConfig(entity)
+	if err := b.reconnect(); err != nil {
+		return err
+	}
+	ec, ok := b.collectionConfig(entity)
 	if !ok {
 		return fmt.Errorf("unknown entity %s", entity)
 	}
 	headers := amqp.Table{"x-retry-count": retries}
-	return b.publish(ctx, ec.Exchange, ec.Queue, event, headers)
+	return b.publish(ctx, ec.Exchange, ec.RoutingKey, event, headers)
 }
 
 func (b *Broker) DeadLetter(ctx context.Context, event model.IndexEvent, attempts int64, reason string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := b.reconnect(); err != nil {
+		return err
+	}
 	headers := amqp.Table{
 		"x-retry-count":       attempts,
 		"x-death-reason":      reason,
 		"x-failed-at":         time.Now().UTC().Format(time.RFC3339Nano),
 		"x-original-event-id": event.EventID,
-		"x-entity":            event.EntityType,
+		"x-collection":        event.Collection,
 	}
 	return b.publish(ctx, b.cfg.DLQExchange, b.cfg.DLQQueue, event, headers)
 }
@@ -141,10 +164,14 @@ func (b *Broker) Consume() (<-chan EntityDelivery, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	if err := b.reconnect(); err != nil {
+		return nil, err
+	}
+
 	merged := make(chan EntityDelivery, b.cfg.PrefetchCount)
 	var wg sync.WaitGroup
 
-	for _, entity := range b.entities {
+	for _, entity := range b.collections {
 		deliveries, err := b.ch.Consume(entity.Queue, entity.Name, false, false, false, false, nil)
 		if err != nil {
 			return nil, fmt.Errorf("consume from %s: %w", entity.Queue, err)
@@ -169,12 +196,18 @@ func (b *Broker) Consume() (<-chan EntityDelivery, error) {
 func (b *Broker) Ack(tag uint64) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := b.reconnect(); err != nil {
+		return err
+	}
 	return b.ch.Ack(tag, false)
 }
 
 func (b *Broker) Nack(tag uint64, requeue bool) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := b.reconnect(); err != nil {
+		return err
+	}
 	return b.ch.Nack(tag, false, requeue)
 }
 
@@ -198,11 +231,11 @@ func (b *Broker) Close() {
 	}
 }
 
-func (b *Broker) entityConfig(name string) (config.EntityConfig, bool) {
-	for _, e := range b.entities {
+func (b *Broker) collectionConfig(name string) (config.CollectionConfig, bool) {
+	for _, e := range b.collections {
 		if e.Name == name {
 			return e, true
 		}
 	}
-	return config.EntityConfig{}, false
+	return config.CollectionConfig{}, false
 }

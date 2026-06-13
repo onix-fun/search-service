@@ -2,30 +2,21 @@ package app
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	grpchealth "google.golang.org/grpc/health"
-	healthpb "google.golang.org/grpc/health/grpc_health_v1"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 
-	searchv1 "github.com/company/search-service/api/search/v1"
-	"github.com/company/search-service/internal/backend/meili"
-	"github.com/company/search-service/internal/broker/rabbitmq"
-	"github.com/company/search-service/internal/config"
-	"github.com/company/search-service/internal/enrichment"
-	"github.com/company/search-service/internal/grpcserver"
-	"github.com/company/search-service/internal/health"
-	"github.com/company/search-service/internal/indexer"
+	"github.com/onix-fun/search-service/internal/backend/meili"
+	"github.com/onix-fun/search-service/internal/broker/rabbitmq"
+	"github.com/onix-fun/search-service/internal/config"
+	"github.com/onix-fun/search-service/internal/enrichment"
+	"github.com/onix-fun/search-service/internal/health"
+	"github.com/onix-fun/search-service/internal/httpapi"
+	"github.com/onix-fun/search-service/internal/indexer"
 )
 
 type Role string
@@ -55,7 +46,7 @@ func Run(ctx context.Context, cfg config.Config, role Role, logger *slog.Logger)
 	if err := waitForMeilisearch(ctx, meiliClient, cfg.Meilisearch.TaskTimeout); err != nil {
 		return fmt.Errorf("wait for meilisearch: %w", err)
 	}
-	if err := meiliClient.Migrate(ctx, cfg.Enrichment.SynonymsFile); err != nil {
+	if err := meiliClient.Migrate(ctx, cfg.Collections); err != nil {
 		return fmt.Errorf("migrate meilisearch index: %w", err)
 	}
 	processor := enrichment.New(cfg.Enrichment.Transliteration, cfg.Enrichment.Morphology)
@@ -63,7 +54,7 @@ func Run(ctx context.Context, cfg config.Config, role Role, logger *slog.Logger)
 	var broker *rabbitmq.Broker
 	if runIndexer {
 		var err error
-		broker, err = rabbitmq.New(cfg.RabbitMQ, cfg.Entities, logger)
+		broker, err = rabbitmq.New(cfg.RabbitMQ, cfg.Collections, logger)
 		if err != nil {
 			return fmt.Errorf("connect to rabbitmq: %w", err)
 		}
@@ -72,17 +63,12 @@ func Run(ctx context.Context, cfg config.Config, role Role, logger *slog.Logger)
 
 	probe := health.NewProbe(meiliClient, redisClient, broker, runAPI, runIndexer)
 
-	var listener net.Listener
-	var err error
+	mux := http.NewServeMux()
+	health.Mount(mux, logger, probe)
 	if runAPI {
-		listener, err = net.Listen("tcp", cfg.Service.GRPCAddr)
-		if err != nil {
-			return fmt.Errorf("listen gRPC: %w", err)
-		}
-		defer listener.Close()
+		mux.Handle("/", httpapi.New(meiliClient, cfg))
 	}
-
-	httpServer := &http.Server{Addr: cfg.Service.HTTPAddr, Handler: health.Handler(logger, probe), ReadHeaderTimeout: 5 * time.Second}
+	httpServer := &http.Server{Addr: cfg.Service.HTTPAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	errs := make(chan error, 3)
 	go func() {
 		logger.Info("health server started", "addr", cfg.Service.HTTPAddr)
@@ -91,22 +77,6 @@ func Run(ctx context.Context, cfg config.Config, role Role, logger *slog.Logger)
 			errs <- fmt.Errorf("serve health HTTP: %w", err)
 		}
 	}()
-
-	var grpcServer *grpc.Server
-	if runAPI {
-		grpcServer = grpc.NewServer(grpc.UnaryInterceptor(requireInternalAuth(cfg.Service.InternalAuthSecret)))
-		searchv1.RegisterSearchServiceServer(grpcServer, grpcserver.New(meiliClient, processor, cfg.Search.DefaultLimit, cfg.Search.MaxLimit))
-		grpcHealth := grpchealth.NewServer()
-		grpcHealth.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
-		healthpb.RegisterHealthServer(grpcServer, grpcHealth)
-		go monitorGRPCHealth(ctx, probe, grpcHealth)
-		go func() {
-			logger.Info("gRPC server started", "addr", cfg.Service.GRPCAddr)
-			if err := grpcServer.Serve(listener); err != nil {
-				errs <- fmt.Errorf("serve gRPC: %w", err)
-			}
-		}()
-	}
 
 	if runIndexer {
 		worker := indexer.NewWorker(cfg, logger, meiliClient, processor, broker, redisClient)
@@ -125,53 +95,10 @@ func Run(ctx context.Context, cfg config.Config, role Role, logger *slog.Logger)
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if grpcServer != nil {
-		stopped := make(chan struct{})
-		go func() {
-			grpcServer.GracefulStop()
-			close(stopped)
-		}()
-		select {
-		case <-stopped:
-		case <-shutdownCtx.Done():
-			grpcServer.Stop()
-		}
-	}
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("health server shutdown failed", "error", err)
 	}
 	return runErr
-}
-
-func requireInternalAuth(secret string) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		if info.FullMethod == "/grpc.health.v1.Health/Check" || info.FullMethod == "/grpc.health.v1.Health/Watch" {
-			return handler(ctx, req)
-		}
-		values := metadata.ValueFromIncomingContext(ctx, "x-internal-auth")
-		if len(values) != 1 || subtle.ConstantTimeCompare([]byte(values[0]), []byte(secret)) != 1 {
-			return nil, status.Error(codes.Unauthenticated, "invalid internal service credentials")
-		}
-		return handler(ctx, req)
-	}
-}
-
-func monitorGRPCHealth(ctx context.Context, probe *health.Probe, server *grpchealth.Server) {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for {
-		status := healthpb.HealthCheckResponse_SERVING
-		if err := probe.Ready(ctx); err != nil {
-			status = healthpb.HealthCheckResponse_NOT_SERVING
-		}
-		server.SetServingStatus("", status)
-		select {
-		case <-ctx.Done():
-			server.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
-			return
-		case <-ticker.C:
-		}
-	}
 }
 
 func Migrate(ctx context.Context, cfg config.Config) error {
@@ -179,7 +106,7 @@ func Migrate(ctx context.Context, cfg config.Config) error {
 	if err := waitForMeilisearch(ctx, client, cfg.Meilisearch.TaskTimeout); err != nil {
 		return err
 	}
-	return client.Migrate(ctx, cfg.Enrichment.SynonymsFile)
+	return client.Migrate(ctx, cfg.Collections)
 }
 
 func waitForMeilisearch(ctx context.Context, client *meili.Client, timeout time.Duration) error {
