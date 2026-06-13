@@ -1,6 +1,6 @@
 PATH := /usr/local/go/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$(HOME)/go/bin:$(PATH)
 
-.PHONY: generate test race build docker-build compose-up migrate
+.PHONY: generate test race build docker-build compose-up migrate swagger
 
 generate:
 	protoc --go_out=. --go_opt=module=github.com/onix-fun/search-service \
@@ -13,8 +13,11 @@ test:
 race:
 	go test -race ./...
 
-build:
+build: swagger
 	go build ./cmd/search-service
+
+swagger:
+	go run github.com/swaggo/swag/cmd/swag@latest init -g cmd/search-service/main.go --parseDependency --parseInternal -o docs
 
 docker-build:
 	docker build -t search-service:local .

@@ -25,6 +25,20 @@ func New(searchBackend backend.SearchBackend, cfg config.Config) http.Handler {
 	return requireBearer(cfg, mux)
 }
 
+// search godoc
+// @Summary Perform a search query
+// @Description Executes a search against a specific Meilisearch collection with filtering, sorting, and pagination.
+// @Tags search
+// @Accept json
+// @Produce json
+// @Param collection path string true "Collection Name"
+// @Param request body model.SearchRequest true "Search Request"
+// @Success 200 {object} model.SearchResult
+// @Failure 400 {string} string "Invalid request"
+// @Failure 404 {string} string "Unknown collection"
+// @Failure 503 {string} string "Search backend unavailable"
+// @Security ApiKeyAuth
+// @Router /v1/collections/{collection}/search [post]
 func (a *API) search(w http.ResponseWriter, r *http.Request) {
 	collectionName := strings.TrimSpace(r.PathValue("collection"))
 	collection, ok := a.cfg.Collection(collectionName)

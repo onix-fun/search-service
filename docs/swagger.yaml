@@ -1,0 +1,104 @@
+basePath: /
+definitions:
+  github_com_onix-fun_search-service_internal_model.SearchHit:
+    properties:
+      data:
+        additionalProperties: {}
+        type: object
+      id:
+        type: string
+      score:
+        type: number
+    type: object
+  github_com_onix-fun_search-service_internal_model.SearchRequest:
+    properties:
+      filter: {}
+      limit:
+        type: integer
+      offset:
+        type: integer
+      query:
+        type: string
+      sort:
+        items:
+          type: string
+        type: array
+    type: object
+  github_com_onix-fun_search-service_internal_model.SearchResult:
+    properties:
+      estimated_total:
+        type: integer
+      hits:
+        items:
+          $ref: '#/definitions/github_com_onix-fun_search-service_internal_model.SearchHit'
+        type: array
+      limit:
+        type: integer
+      offset:
+        type: integer
+      processing_time_ms:
+        type: integer
+    type: object
+host: localhost:8080
+info:
+  contact:
+    email: support@swagger.io
+    name: API Support
+    url: http://www.swagger.io/support
+  description: Microservice for high-performance full-text search and indexing with
+    Meilisearch.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  termsOfService: http://swagger.io/terms/
+  title: Search Service API
+  version: "1.0"
+paths:
+  /v1/collections/{collection}/search:
+    post:
+      consumes:
+      - application/json
+      description: Executes a search against a specific Meilisearch collection with
+        filtering, sorting, and pagination.
+      parameters:
+      - description: Collection Name
+        in: path
+        name: collection
+        required: true
+        type: string
+      - description: Search Request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_onix-fun_search-service_internal_model.SearchRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_onix-fun_search-service_internal_model.SearchResult'
+        "400":
+          description: Invalid request
+          schema:
+            type: string
+        "404":
+          description: Unknown collection
+          schema:
+            type: string
+        "503":
+          description: Search backend unavailable
+          schema:
+            type: string
+      security:
+      - ApiKeyAuth: []
+      summary: Perform a search query
+      tags:
+      - search
+securityDefinitions:
+  ApiKeyAuth:
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

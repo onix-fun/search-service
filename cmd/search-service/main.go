@@ -10,9 +10,28 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/company/search-service/internal/app"
-	"github.com/company/search-service/internal/config"
+	"github.com/onix-fun/search-service/internal/app"
+	"github.com/onix-fun/search-service/internal/config"
 )
+
+// @title Search Service API
+// @version 1.0
+// @description Microservice for high-performance full-text search and indexing with Meilisearch.
+// @termsOfService http://swagger.io/terms/
+
+// @contact.name API Support
+// @contact.url http://www.swagger.io/support
+// @contact.email support@swagger.io
+
+// @license.name MIT
+// @license.url https://opensource.org/licenses/MIT
+
+// @host localhost:8080
+// @BasePath /
+
+// @securityDefinitions.apikey ApiKeyAuth
+// @in header
+// @name Authorization
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
