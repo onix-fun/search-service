@@ -1,0 +1,1 @@
+"""Onix Search inference adapter."""

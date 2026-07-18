@@ -1,19 +1,13 @@
 service:
-  name: search-service
-  grpc_addr: ":9090"
+  name: search
+  grpc_addr: ":9094"
   http_addr: ":8080"
+  grpc_tls: false
 
-redis:
-  addr: "localhost:6379"
-  lease_key: "search:index:leader"
-  lease_duration: "15s"
-  lease_renew: "5s"
-
-rabbitmq:
-  url: "amqp://guest:guest@localhost:5672/"
-  dlq_exchange: "search.index.dlq"
-  dlq_queue: "search.index.dlq.queue"
-  prefetch_count: 100
+database:
+  url: "postgres://search:search@localhost:5432/search?sslmode=disable"
+  auto_migrate: true
+  migration_path: file://migrations
 
 meilisearch:
   host: "http://localhost:7700"
@@ -21,10 +15,17 @@ meilisearch:
   index: "global_search"
   task_poll_interval: "100ms"
   task_timeout: "30s"
+  retired_indexes: [collections]
 
 search:
   default_limit: 20
   max_limit: 100
+
+embedding:
+  endpoint: "http://localhost:8091"
+  model: "intfloat/multilingual-e5-small"
+  dimensions: 384
+  timeout: "8s"
 
 enrichment:
   transliteration: true
@@ -36,13 +37,38 @@ indexer:
   queue_size: 1000
   flush_interval: "500ms"
   max_retries: 2
+  lease_key: "search:indexer"
+  lease_duration: "15s"
+  lease_renew: "5s"
 
-entities:
-  - name: subjects
-    exchange: "search.subjects.events"
-    queue: "search.subjects.events.queue"
-    revision_prefix: "search:revision:subjects:"
-  - name: blocks
-    exchange: "search.blocks.events"
-    queue: "search.blocks.events.queue"
-    revision_prefix: "search:revision:blocks:"
+collections:
+  - name: posts
+    index: posts
+    revision_prefix: "search:revision:posts:"
+    searchable_fields: [tags, discussion, title, content]
+    filterable_fields: [visibility]
+    sortable_fields: [updated_at]
+    returnable_fields: [title, content, tags, visibility, author_id, updated_at]
+    semantic_fields: [tags, discussion, title, content]
+    semantic_weights: {tags: 1.0, discussion: 0.8, title: 0.5, content: 0.5}
+    embedder: multilingual-e5-small
+  - name: profiles
+    index: profiles
+    revision_prefix: "search:revision:profiles:"
+    searchable_fields: [username, display_name, bio]
+    filterable_fields: [owner_type]
+    sortable_fields: [updated_at]
+    returnable_fields: [username, display_name, bio, owner_type, owner_id, updated_at]
+    semantic_fields: [username, display_name, bio]
+    semantic_weights: {username: 1.0, display_name: 0.8, bio: 0.4}
+    embedder: multilingual-e5-small
+  - name: comments
+    index: comments
+    revision_prefix: "search:revision:comments:"
+    searchable_fields: [content]
+    filterable_fields: [owner_type, owner_id, post_id]
+    sortable_fields: [updated_at]
+    returnable_fields: [content, post_id, owner_type, owner_id, updated_at]
+    semantic_fields: [content]
+    semantic_weights: {content: 1.0}
+    embedder: multilingual-e5-small

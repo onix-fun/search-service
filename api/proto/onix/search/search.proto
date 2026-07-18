@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+package onix.search;
+
+option java_multiple_files = true;
+option java_package = "com.onix.search.contract";
+option go_package = "github.com/onix-fun/search/service/internal/gen/search;searchpb";
+
+service SearchService {
+  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc Similar(SimilarRequest) returns (SearchResponse);
+  rpc IngestEvents(IngestEventsRequest) returns (IngestEventsResponse);
+}
+
+enum SearchMode {
+  SEARCH_MODE_UNSPECIFIED = 0;
+  SEARCH_MODE_LEXICAL = 1;
+  SEARCH_MODE_SEMANTIC = 2;
+  SEARCH_MODE_HYBRID = 3;
+}
+
+enum IndexOperation {
+  INDEX_OPERATION_UNSPECIFIED = 0;
+  INDEX_OPERATION_UPSERT = 1;
+  INDEX_OPERATION_DELETE = 2;
+}
+
+message SearchFilter {
+  string field = 1;
+  repeated string values = 2;
+}
+
+message SearchRequest {
+  string collection = 1;
+  string query = 2;
+  SearchMode mode = 3;
+  repeated SearchFilter filters = 4;
+  int32 page_size = 5;
+  string page_token = 6;
+  double semantic_weight = 7;
+  string locale = 8;
+  bool explain = 9;
+}
+
+message SimilarRequest {
+  string collection = 1;
+  string text = 2;
+  string document_id = 3;
+  repeated SearchFilter filters = 4;
+  int32 page_size = 5;
+  string page_token = 6;
+  string locale = 7;
+  bool explain = 8;
+}
+
+message SearchCandidate {
+  string provider_key = 1;
+  string item_type = 2;
+  string item_id = 3;
+  double score = 4;
+  double lexical_score = 5;
+  double semantic_score = 6;
+  repeated string matched_fields = 7;
+  int64 revision = 8;
+}
+
+message SearchResponse {
+  repeated SearchCandidate candidates = 1;
+  string next_page_token = 2;
+  SearchMode effective_mode = 3;
+  double semantic_weight = 4;
+  bool lexical_fallback = 5;
+}
+
+message IngestEventsRequest {
+  repeated IndexEvent events = 1;
+}
+
+message IndexEvent {
+  string event_id = 1;
+  string source_service = 2;
+  string aggregate_type = 3;
+  string aggregate_id = 4;
+  int64 revision = 5;
+  string occurred_at = 6;
+  IndexOperation operation = 7;
+  string collection = 8;
+  string document_json = 9;
+}
+
+message IngestEventsResponse {
+  repeated IngestEventResult results = 1;
+}
+
+message IngestEventResult {
+  string event_id = 1;
+  IngestStatus status = 2;
+  string message = 3;
+}
+
+enum IngestStatus {
+  INGEST_STATUS_UNSPECIFIED = 0;
+  INGEST_STATUS_ACCEPTED = 1;
+  INGEST_STATUS_DUPLICATE = 2;
+  INGEST_STATUS_STALE = 3;
+  INGEST_STATUS_REJECTED = 4;
+}

@@ -1,0 +1,12 @@
+.contracts/
+service/bin/
+service/coverage.out
+service/*.test
+inference/.venv/
+inference/.pytest_cache/
+inference/.mypy_cache/
+inference/.ruff_cache/
+inference/**/__pycache__/
+inference/**/*.pyc
+.env
+*.log

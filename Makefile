@@ -1,29 +1,27 @@
 PATH := /usr/local/go/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$(HOME)/go/bin:$(PATH)
 
-.PHONY: generate test race build docker-build compose-up migrate swagger
+.PHONY: generate test race build docker-build compose-up migrate
 
 generate:
-	protoc --go_out=. --go_opt=module=github.com/onix-fun/search-service \
-		--go-grpc_out=. --go-grpc_opt=module=github.com/onix-fun/search-service \
-		api/proto/search/v1/search.proto
+	cd service && protoc -I ../api/proto \
+		--go_out=. --go_opt=module=github.com/onix-fun/search/service \
+		--go-grpc_out=. --go-grpc_opt=module=github.com/onix-fun/search/service \
+		../api/proto/onix/search/search.proto
 
 test:
-	go test ./...
+	cd service && go test ./...
 
 race:
-	go test -race ./...
+	cd service && go test -race ./...
 
-build: swagger
-	go build ./cmd/search-service
-
-swagger:
-	go run github.com/swaggo/swag/cmd/swag@latest init -g cmd/search-service/main.go --parseDependency --parseInternal -o docs
+build:
+	cd service && go build ./cmd/search
 
 docker-build:
-	docker build -t search-service:local .
+	docker build -t onix-search:local service
 
 compose-up:
-	docker compose up --build -d redis meilisearch search-service
+	cd service && docker compose up --build -d postgres meilisearch search
 
 migrate:
-	docker compose --profile tools run --rm migrate-index
+	cd service && docker compose --profile tools run --rm migrate-index

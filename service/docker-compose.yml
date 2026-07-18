@@ -1,25 +1,18 @@
 services:
-  redis:
-    image: redis:8.2.6-alpine
-    command: ["redis-server", "--appendonly", "yes"]
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: search
+      POSTGRES_USER: search
+      POSTGRES_PASSWORD: search
     ports:
-      - "6379:6379"
+      - "5432:5432"
     volumes:
-      - redis-data:/data
+      - postgres-data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 2s
-      timeout: 2s
-      retries: 20
-
-  rabbitmq:
-    image: rabbitmq:4-alpine
-    ports:
-      - "5672:5672"
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      test: ["CMD-SHELL", "pg_isready -U search -d search"]
       interval: 5s
-      timeout: 5s
+      timeout: 3s
       retries: 10
 
   meilisearch:
@@ -31,16 +24,18 @@ services:
     volumes:
       - meili-data:/meili_data
 
-  search-service:
+  search:
     build: .
     command: ["serve", "--role=all", "--config=config/config.example.yaml"]
     ports:
       - "8080:8080"
       - "9090:9090"
+    environment:
+      SEARCH_DATABASE_URL: postgres://search:search@postgres:5432/search?sslmode=disable
+      SEARCH_INTERNAL_AUTH_SECRET: local-development-internal-secret
+      SEARCH_API_KEY: local-development-api-key
     depends_on:
-      redis:
-        condition: service_healthy
-      rabbitmq:
+      postgres:
         condition: service_healthy
       meilisearch:
         condition: service_started
@@ -54,5 +49,5 @@ services:
         condition: service_started
 
 volumes:
-  redis-data:
+  postgres-data:
   meili-data:

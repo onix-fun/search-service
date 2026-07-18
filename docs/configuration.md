@@ -17,11 +17,11 @@
 - `lease_duration`: Время жизни блокировки.
 - `lease_renew`: Интервал обновления блокировки.
 
-### RabbitMQ
-- `url`: Адрес RabbitMQ.
-- `dlq_exchange`: Обменник для Dead Letter Queue.
-- `dlq_queue`: Очередь для Dead Letter Queue.
-- `prefetch_count`: Лимит одновременно обрабатываемых сообщений индексатором.
+### Database
+Postgres используется как durable inbox и очередь задач индексации.
+- `url`: DSN Search Postgres.
+- `auto_migrate`: Автоматически применять миграции при старте.
+- `migration_path`: Путь к миграциям.
 
 ### Meilisearch
 - `host`: Адрес Meilisearch.
@@ -50,10 +50,7 @@
 Описание индексируемых сущностей и их маппинга.
 - `name`: Внутреннее имя коллекции.
 - `index`: Имя индекса в Meilisearch.
-- `exchange`: RabbitMQ обменник, из которого приходят события.
-- `queue`: Очередь RabbitMQ для этой коллекции.
-- `routing_key`: Ключ маршрутизации.
-- `revision_prefix`: Префикс ключа в Redis для хранения ревизий.
+- `revision_prefix`: Совместимый префикс конфигурации; корректность ревизий хранится в Postgres `applied_revisions`.
 - `searchable_fields`: Поля, по которым доступен полнотекстовый поиск.
 - `filterable_fields`: Поля для фильтрации.
 - `sortable_fields`: Поля для сортировки.

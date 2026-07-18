@@ -4,7 +4,7 @@
 - Go 1.26+
 - Meilisearch 1.x
 - Redis
-- RabbitMQ
+- Postgres
 
 ## Команды Makefile
 - `make build`: Сборка сервиса.
@@ -16,4 +16,4 @@
 ```bash
 make compose-up
 ```
-Это запустит Redis, Meilisearch и сам Search Service.
+Это запустит Postgres, Redis, Meilisearch и сам Search Service.

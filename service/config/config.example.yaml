@@ -1,30 +1,31 @@
 service:
-  name: search-service
-  grpc_addr: ":9090"
+  name: search
+  grpc_addr: ":9094"
   http_addr: ":8080"
-  internal_auth_secret: "development-only-internal-secret"
+  internal_auth_secret: "${SEARCH_INTERNAL_AUTH_SECRET}"
+  grpc_tls: false
 
-redis:
-  addr: "redis:6379"
-  lease_key: "search:index:leader"
-  lease_duration: "15s"
-  lease_renew: "5s"
-
-rabbitmq:
-  url: "amqp://guest:guest@rabbitmq:5672/"
-  dlq_exchange: "search.index.dlq"
-  dlq_queue: "search.index.dlq.queue"
-  prefetch_count: 100
+database:
+  url: "${SEARCH_DATABASE_URL}"
+  auto_migrate: true
+  migration_path: file://migrations
 
 meilisearch:
   host: "http://meilisearch:7700"
   api_key: "local-development-key"
   task_poll_interval: "100ms"
   task_timeout: "30s"
+  retired_indexes: [collections]
 
 search:
   default_limit: 20
   max_limit: 100
+
+embedding:
+  endpoint: "http://search-inference:8080"
+  model: "intfloat/multilingual-e5-small"
+  dimensions: 384
+  timeout: "8s"
 
 enrichment:
   transliteration: true
@@ -36,28 +37,43 @@ indexer:
   queue_size: 1000
   flush_interval: "500ms"
   max_retries: 5
+  lease_key: "search:indexer"
+  lease_duration: "15s"
+  lease_renew: "5s"
 
 collections:
-  - name: subjects
-    index: subjects
-    exchange: "search.subjects.events"
-    queue: "search.subjects.events.queue"
-    routing_key: "search.subjects.events.queue"
-    revision_prefix: "search:revision:subjects:"
-    searchable_fields: [name, content]
-    filterable_fields: [visibility, publication_status]
+  - name: posts
+    index: posts
+    revision_prefix: "search:revision:posts:"
+    searchable_fields: [tags, discussion, title, content]
+    filterable_fields: [visibility]
     sortable_fields: [updated_at]
-    returnable_fields: [name, content, visibility, publication_status, updated_at]
-  - name: blocks
-    index: blocks
-    exchange: "search.blocks.events"
-    queue: "search.blocks.events.queue"
-    routing_key: "search.blocks.events.queue"
-    revision_prefix: "search:revision:blocks:"
+    returnable_fields: [title, content, tags, visibility, author_id, updated_at]
+    semantic_fields: [tags, discussion, title, content]
+    semantic_weights: {tags: 1.0, discussion: 0.8, title: 0.5, content: 0.5}
+    embedder: multilingual-e5-small
+  - name: profiles
+    index: profiles
+    revision_prefix: "search:revision:profiles:"
+    searchable_fields: [username, display_name, bio]
+    filterable_fields: [owner_type]
+    sortable_fields: [updated_at]
+    returnable_fields: [username, display_name, bio, owner_type, owner_id, updated_at]
+    semantic_fields: [username, display_name, bio]
+    semantic_weights: {username: 1.0, display_name: 0.8, bio: 0.4}
+    embedder: multilingual-e5-small
+  - name: comments
+    index: comments
+    revision_prefix: "search:revision:comments:"
     searchable_fields: [content]
-    returnable_fields: [content, subject_id]
+    filterable_fields: [owner_type, owner_id, post_id]
+    sortable_fields: [updated_at]
+    returnable_fields: [content, post_id, owner_type, owner_id, updated_at]
+    semantic_fields: [content]
+    semantic_weights: {content: 1.0}
+    embedder: multilingual-e5-small
 api_keys:
   - name: local
     value: "${SEARCH_API_KEY}"
-    scopes: [search:read]
+    scopes: [search:read, search:write]
     collections: ["*"]
